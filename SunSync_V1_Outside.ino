@@ -1,0 +1,93 @@
+#include <esp_now.h>
+#include <WiFi.h>
+
+// -------- PINS --------
+const int tempSensor = 34;
+const int lightAnalog = 33;
+const int lightDigital = 17;
+
+const int NUM_SAMPLES = 50;
+const float ADC_CORRECTION = 1.19;
+
+// -------- TIMING --------
+unsigned long lastSendTime = 0;
+const unsigned long interval = 1000; // 10 seconds
+
+// -------- DATA STRUCT --------
+typedef struct struct_message {
+  float tempC;
+  float tempF;
+  float voltage;
+  int lightAnalog;
+  int lightDigital;
+} struct_message;
+
+struct_message data;
+
+uint8_t receiverAddress[] = {0x08, 0xA6, 0xF7, 0xBB, 0x80, 0x04};
+
+esp_now_peer_info_t peerInfo;
+
+void setup()
+{
+  Serial.begin(115200);
+
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);
+
+  pinMode(lightDigital, INPUT);
+
+  WiFi.mode(WIFI_STA);
+
+  if (esp_now_init() != ESP_OK)
+  {
+    Serial.println("ESP-NOW Init Failed");
+    return;
+  }
+
+  memcpy(peerInfo.peer_addr, receiverAddress, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+
+  if (esp_now_add_peer(&peerInfo) != ESP_OK)
+  {
+    Serial.println("Failed to add peer");
+    return;
+  }
+}
+
+void loop()
+{
+  // -------- ONLY RUN EVERY 10 SECONDS --------
+  if (millis() - lastSendTime >= interval)
+  {
+    lastSendTime = millis();
+
+    // -------- LIGHT --------
+    data.lightAnalog = analogRead(lightAnalog);
+    data.lightDigital = digitalRead(lightDigital);
+
+    // -------- TEMP --------
+    long sum = 0;
+
+    for (int i = 0; i < NUM_SAMPLES; i++)
+    {
+      sum += analogRead(tempSensor);
+    }
+
+    float avgADC = sum / (float)NUM_SAMPLES;
+
+    data.voltage = (avgADC / 4095.0) * 3.3 * ADC_CORRECTION;
+    data.tempC = (data.voltage - 0.5) * 100.0;
+    data.tempF = data.tempC * 9.0 / 5.0 + 32.0;
+
+    // -------- SEND --------
+    esp_now_send(receiverAddress, (uint8_t *)&data, sizeof(data));
+
+    // -------- DEBUG --------
+    Serial.print("Sent Temp: ");
+    Serial.print(data.tempC);
+    Serial.print(" C | Light: ");
+    Serial.println(data.lightAnalog);
+  }
+}
