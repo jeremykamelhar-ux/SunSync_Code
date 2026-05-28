@@ -1,0 +1,347 @@
+#include <esp_now.h>
+#include <WiFi.h>
+#include <esp_wifi.h>
+#include <LiquidCrystal_I2C.h>
+#include <ESP32Servo.h>
+
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+
+Servo myservo;
+
+const int servoPin = 26;
+
+
+//  INPUTS 
+
+const int modeSwitch = 25;
+const int potPin = 34;
+const int tempButton = 27;
+
+
+const int redPin = 14;
+const int greenPin = 12;
+const int bluePin = 13;
+
+
+//  TEMP DISPLAY
+
+bool showFahrenheit = true;
+bool lastButtonState = HIGH;
+bool lastManualMode = false;
+
+//  Servo MOTOR  
+
+int motorSpeedDisplay = 0;
+
+const int SERVO_STOP = 95;
+
+// SAME SPEED ALWAYS
+const int SERVO_CLOCKWISE = 105;
+
+const int SERVO_COUNTERCLOCKWISE = 85;
+
+
+//  BLIND TIERS 
+
+int currentTier = 0;
+
+unsigned long tierMoveTime = 6000;
+
+
+// ESP-NOW DATA 
+
+typedef struct struct_message
+{
+  float tempC;
+  float tempF;
+  float voltage;
+  int lightAnalog;
+  int lightDigital;
+
+} struct_message;
+
+struct_message incomingData;
+
+// ---------------- Data Reciecve ----------------
+
+void onDataRecv(const esp_now_recv_info_t *info,
+                const uint8_t *incomingDataBytes,
+                int len)
+{
+  memcpy(&incomingData,
+         incomingDataBytes,
+         sizeof(incomingData));
+
+  Serial.println("ESP-NOW Data Received");
+
+  Serial.print("TempF: ");
+  Serial.println(incomingData.tempF);
+
+  Serial.print("Light: ");
+  Serial.println(incomingData.lightAnalog);
+}
+
+void setup()
+{
+  Serial.begin(115200);
+
+  lcd.init();
+  lcd.backlight();
+
+  // -------- INPUTS --------
+  pinMode(modeSwitch, INPUT_PULLUP);
+
+  pinMode(potPin, INPUT);
+
+  pinMode(tempButton, INPUT_PULLUP);
+
+  pinMode(redPin, OUTPUT);
+  pinMode(greenPin, OUTPUT);
+  pinMode(bluePin, OUTPUT);
+
+  myservo.attach(servoPin, 500, 2400);
+
+  myservo.write(SERVO_STOP);
+
+  WiFi.mode(WIFI_STA);
+
+  WiFi.disconnect();
+
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_promiscuous(false);
+
+  // -------- ESP NOW --------
+  if (esp_now_init() != ESP_OK)
+  {
+    lcd.clear();
+    lcd.print("ESP NOW FAIL");
+    return;
+  }
+
+  esp_now_register_recv_cb(onDataRecv);
+
+  lcd.clear();
+}
+
+void loop()
+{
+ 
+  // TEMP BUTTON 
+  bool buttonState = digitalRead(tempButton);
+
+  if(buttonState == LOW &&
+     lastButtonState == HIGH)
+  {
+    showFahrenheit = !showFahrenheit;
+
+    delay(200);
+  }
+
+  lastButtonState = buttonState;
+
+  
+  //  MODE SWITCH 
+ 
+  bool manualMode = digitalRead(modeSwitch);
+
+  
+  //  MANUAL MODE 
+
+  if(manualMode == HIGH)
+  {
+    int potValue = analogRead(potPin);
+
+    // if the servo is in the middle, the motor will not move
+    if(potValue > 1800 &&
+       potValue < 2300)
+    {
+      myservo.write(SERVO_STOP);
+
+      motorSpeedDisplay = 0;
+    }
+
+    // CLOCKWISE 
+    else if(potValue >= 2300)
+    {
+      myservo.write(SERVO_CLOCKWISE);
+
+      motorSpeedDisplay = 50;
+    }
+
+    //  COUNTERCLOCKWISE 
+    else
+    {
+      myservo.write(SERVO_COUNTERCLOCKWISE);
+
+      motorSpeedDisplay = -50;
+    }
+  }
+
+  
+elsen // will be on automode
+{
+  int lightValue = incomingData.lightAnalog;
+
+  int targetTier = 0;
+
+  
+// CUSTOM LIGHT INTERVALS
+
+if(lightValue < 200)
+{
+  // FULLY CLOSED
+  targetTier = 4;
+}
+else if(lightValue < 500)
+{
+  // HALF OPEN
+  targetTier = 2;
+}
+else if(lightValue <= 700)
+{
+  // FULLY OPEN
+  targetTier = 0;
+}
+else if(lightValue < 2000)
+{
+  // HALF OPEN
+  targetTier = 2;
+}
+else
+{
+  // FULLY CLOSED
+  targetTier = 4;
+}
+
+  
+  // MOVE ONLY IF TIER CHANGED
+  
+  if(targetTier != currentTier)
+  {
+    int tierDifference =
+    abs(targetTier - currentTier);
+
+    // 24 sec total / 4 tier movements
+    unsigned long moveTime =
+    tierDifference * 6000;
+
+    
+  // CLOSE BLINDS
+  
+  if(targetTier > currentTier)
+  {
+  myservo.write(SERVO_COUNTERCLOCKWISE);
+  }
+
+  
+  // OPEN BLINDS
+
+  else
+  {
+  myservo.write(SERVO_CLOCKWISE);
+  }
+    delay(moveTime);
+
+    // STOP MOTOR
+    myservo.write(SERVO_STOP);
+
+    currentTier = targetTier;
+  }
+
+  motorSpeedDisplay = currentTier * 25;
+}
+// if the motor is switched from manual to auto, the motor will be reset back to closed
+if(lastManualMode == true &&
+   manualMode == false)
+{
+  // MOVE TO FULLY CLOSED
+  myservo.write(SERVO_COUNTERCLOCKWISE);
+
+  delay(24000);
+
+  myservo.write(SERVO_STOP);
+
+  currentTier = 4;
+}
+
+  digitalWrite(greenPin, LOW);
+  digitalWrite(bluePin, LOW);
+
+  if(incomingData.tempF >= 80)
+  {
+    digitalWrite(redPin, HIGH);
+  }
+  else if(incomingData.tempF >= 60)
+  {
+    digitalWrite(greenPin, HIGH);
+  }
+  else
+  {
+    digitalWrite(bluePin, HIGH);
+  }
+
+// LCD
+  lcd.setCursor(0,0);
+
+  lcd.print("Ambient Temp:");
+
+  lcd.setCursor(15,0);
+
+  if(manualMode == HIGH)
+  {
+    lcd.print("M");
+  }
+  else
+  {
+    lcd.print("A");
+  }
+
+  
+  lcd.setCursor(0,1);
+
+  lcd.print("                ");
+
+  lcd.setCursor(0,1);
+
+  if(showFahrenheit)
+  {
+    lcd.print(incomingData.tempF,1);
+
+    lcd.print((char)223);
+
+    lcd.print("F");
+  }
+  else
+  {
+    lcd.print(incomingData.tempC,1);
+
+    lcd.print((char)223);
+
+    lcd.print("C");
+  }
+
+  // Serial Monitor
+  Serial.print("Temp: ");
+
+  if(showFahrenheit)
+  {
+    Serial.print(incomingData.tempF);
+    Serial.print(" F");
+  }
+  else
+  {
+    Serial.print(incomingData.tempC);
+    Serial.print(" C");
+  }
+
+  Serial.print(" | Tier: ");
+
+  Serial.println(currentTier);
+
+  delay(10);
+
+  lastManualMode = manualMode;
+}
